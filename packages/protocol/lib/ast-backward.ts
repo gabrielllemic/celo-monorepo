@@ -12,9 +12,179 @@ const STORAGE_DEFAULT = 'default'
 
 const OUT_VOID_PARAMETER_STRING = 'void'
 
-export interface ASTCompatibilityReport {
-  majorChanges: string[];
-  minorChanges: string[];
+export class ASTCompatibilityReport {
+  changes: Change[];
+  constructor(changes: Change[]) {
+    this.changes = changes;
+  }
+  public push(...changes: Change[]) {
+    this.changes.push(...changes)
+  }
+  public include(other: ASTCompatibilityReport) {
+    this.push(...other.changes)
+  }
+}
+
+export interface Change {
+  getContract(): string;
+  accept<T>(visitor: ChangeVisitor<T>): T;
+}
+
+export enum ChangeType { Patch, Minor, Major };
+
+export interface ChangeVisitor<T> {
+  visitMethodMutability(change: MethodMutabilityChange): T;
+  visitMethodParameters(change: MethodParametersChange): T;
+  visitMethodReturn(change: MethodReturnChange): T;
+  visitMethodVisibility(change: MethodVisibilityChange): T;
+  visitMethodAdded(change: MethodAddedChange): T;
+  visitMethodRemoved(change: MethodRemovedChange): T;
+  visitContractType(change: ContractTypeChange): T;
+  visitNewContract(change: NewContractChange): T;
+}
+
+export abstract class DefaultChangeVisitor<T> implements ChangeVisitor<T> {
+  constructor() { }
+  abstract visitDefault(change: Change): T;
+  visitMethodMutability = (change: MethodMutabilityChange): T => this.visitDefault(change);
+  visitMethodParameters = (change: MethodParametersChange): T => this.visitDefault(change);
+  visitMethodReturn = (change: MethodReturnChange): T => this.visitDefault(change);
+  visitMethodVisibility = (change: MethodVisibilityChange): T => this.visitDefault(change);
+  visitMethodAdded = (change: MethodAddedChange): T => this.visitDefault(change);
+  visitMethodRemoved = (change: MethodRemovedChange): T => this.visitDefault(change);
+  visitContractType = (change: ContractTypeChange): T => this.visitDefault(change);
+  visitNewContract = (change: NewContractChange): T => this.visitDefault(change);
+}
+
+export class CategorizerChangeVisitor extends DefaultChangeVisitor<ChangeType> {
+  constructor() { super(); }
+  // By default assume all are major changes
+  visitDefault = (_change: Change): ChangeType => ChangeType.Major;
+
+  visitMethodAdded = (_change: MethodAddedChange): ChangeType => ChangeType.Minor;
+  visitNewContract = (_change: NewContractChange): ChangeType => ChangeType.Minor;
+  visitMethodVisibility = (change: MethodVisibilityChange): ChangeType => {
+    if (change.oldValue == VISIBILITY_PUBLIC && change.newValue == VISIBILITY_EXTERNAL) {
+      // Broader visibility, minor change
+      return ChangeType.Minor;
+    }
+    return ChangeType.Major;
+  }
+}
+
+export class EnglishToStringVisitor implements ChangeVisitor<string> {
+  visitMethodMutability(change: MethodMutabilityChange): string {
+    return `Mutability of method ${change.contract}.${change.signature} changed from '${change.oldValue}' to '${change.newValue}'`;
+  }
+  visitMethodParameters(change: MethodParametersChange): string {
+    return `Parameters of method ${change.contract}.${change.signature} changed from '${change.oldValue}' to '${change.newValue}'`;
+  }
+  visitMethodReturn(change: MethodReturnChange): string {
+    return `Return parameters of method ${change.contract}.${change.signature} changed from '${change.oldValue}' to '${change.newValue}'`;
+  }
+  visitMethodVisibility(change: MethodVisibilityChange): string {
+    return `Visibility of method ${change.contract}.${change.signature} changed from '${change.oldValue}' to '${change.newValue}'`;
+  }
+  visitMethodAdded(change: MethodAddedChange): string {
+    return `Contract '${change.contract}' has a new method: '${change.signature}'`;
+  }
+  visitMethodRemoved(change: MethodRemovedChange): string {
+    return `Contract '${change.contract}' deleted a method: '${change.signature}'`;
+  }
+  visitContractType(change: ContractTypeChange): string {
+    return `Contract '${change.contract}' changed its type from '${change.oldType}' to '${change.newType}'`;
+  }
+  visitNewContract(change: NewContractChange): string {
+    return `Contract '${change.contract}' was created`;
+  }
+}
+
+abstract class ContractChange implements Change {
+  contract: string;
+  constructor(contract: string) {
+    this.contract = contract;
+  }
+  getContract() {
+    return this.contract;
+  }
+
+  abstract accept<T>(visitor: ChangeVisitor<T>): T;
+}
+
+export class NewContractChange extends ContractChange {
+  accept<T>(visitor: ChangeVisitor<T>): T {
+    return visitor.visitNewContract(this);
+  }
+}
+
+export class ContractTypeChange extends ContractChange {
+  oldType: string;
+  newType: string;
+  constructor(contract: string, oldType: string, newType: string) {
+    super(contract);
+    this.oldType = oldType;
+    this.newType = newType;
+  }
+  accept<T>(visitor: ChangeVisitor<T>): T {
+    return visitor.visitContractType(this);
+  }
+}
+
+abstract class MethodChange extends ContractChange {
+  signature: string;
+  constructor(contract: string, signature: string) {
+    super(contract);
+    this.signature = signature;
+  }
+  getSignature() {
+    return this.signature;
+  }
+}
+
+export class MethodAddedChange extends MethodChange {
+  accept<T>(visitor: ChangeVisitor<T>): T {
+    return visitor.visitMethodAdded(this);
+  }
+}
+
+export class MethodRemovedChange extends MethodChange {
+  accept<T>(visitor: ChangeVisitor<T>): T {
+    return visitor.visitMethodRemoved(this);
+  }
+}
+
+abstract class MethodValueChange extends MethodChange {
+  oldValue: string;
+  newValue: string;
+  constructor(contract: string, signature: string, oldValue: string, newValue: string) {
+    super(contract, signature);
+    this.oldValue = oldValue;
+    this.newValue = newValue;
+  }
+}
+
+export class MethodVisibilityChange extends MethodValueChange {
+  accept<T>(visitor: ChangeVisitor<T>): T {
+    return visitor.visitMethodVisibility(this);
+  }
+}
+
+export class MethodMutabilityChange extends MethodValueChange {
+  accept<T>(visitor: ChangeVisitor<T>): T {
+    return visitor.visitMethodMutability(this);
+  }
+}
+
+export class MethodParametersChange extends MethodValueChange {
+  accept<T>(visitor: ChangeVisitor<T>): T {
+    return visitor.visitMethodParameters(this);
+  }
+}
+
+export class MethodReturnChange extends MethodValueChange {
+  accept<T>(visitor: ChangeVisitor<T>): T {
+    return visitor.visitMethodReturn(this);
+  }
 }
 
 export interface ASTError {
@@ -22,11 +192,13 @@ export interface ASTError {
   wrapped: Error
 }
 
-const major = (change: string): ASTCompatibilityReport => {
-  return {
-    majorChanges: [change],
-    minorChanges: []
+export const createIndexByChangeType = (changes: Change[], categorizer: ChangeVisitor<ChangeType>): Change[][] => {
+  const byCategory = []
+  for (let ct in ChangeType) {
+    byCategory[ct] = []
   }
+  changes.map(c => byCategory[c.accept(categorizer)].push(c));
+  return byCategory;
 }
 
 const getSignature = (method: any): string => {
@@ -34,23 +206,16 @@ const getSignature = (method: any): string => {
   return `${method.selector}`
 }
 
+
 const createMethodIndex = (methods: any[]): any[] => {
   const asPairs = methods.map(m => ({ [`${getSignature(m)}`]: m }))
   return Object.assign({}, ...asPairs)
 }
 
-const addAbiReport = (target: ASTCompatibilityReport, report: ASTCompatibilityReport): void => {
-  target.majorChanges.push(...report.majorChanges)
-  target.minorChanges.push(...report.minorChanges)
-}
-
 const mergeReports = (reports: ASTCompatibilityReport[]): ASTCompatibilityReport => {
-  const report = {
-    majorChanges: [],
-    minorChanges: []
-  }
+  const report = new ASTCompatibilityReport([])
   reports.forEach((r: ASTCompatibilityReport): void => {
-    addAbiReport(report, r)
+    report.include(r)
   })
   return report
 }
@@ -66,40 +231,37 @@ const parametersSignature = (parameters: any[]): string => {
   return parameters.map(singleSignature).join(', ')
 }
 
-const checkMethodCompatibility = (signature: string, m1: any, m2: any): ASTCompatibilityReport => {
-  const report = {
-    majorChanges: [],
-    minorChanges: []
+const checkMethodCompatibility = (contract: string, m1: any, m2: any): ASTCompatibilityReport => {
+  const report = new ASTCompatibilityReport([])
+  const signature = getSignature(m1)
+  // Sanity check
+  const signature2 = getSignature(m2)
+  if (signature !== signature2) {
+    throw new Error(`Signatures should be equal: ${signature} !== ${signature2}`)
   }
   // Visibility changes
   if (m1.visibility != m2.visibility) {
-    if (m1.visibility == VISIBILITY_PUBLIC && m2.visibility == VISIBILITY_EXTERNAL) {
-      // Granted more visibility, minor change
-      report.minorChanges.push(`Method ${signature} was upgraded from '${VISIBILITY_PUBLIC}' to '${VISIBILITY_EXTERNAL}'`)
-    } else {
-      // Any other case, assume major change
-      report.majorChanges.push(`Method ${signature} was modified from '${m1.visibility}' to '${m2.visibility}'`)
-    }
+    report.push(new MethodVisibilityChange(contract, signature, m1.visibility, m2.visibility))
   }
   // Parameters signature (types are already equal, but this will check for storage locations)
   const par1 = parametersSignature(m1.parameters.parameters)
   const par2 = parametersSignature(m2.parameters.parameters)
   if (par1 !== par2) {
-    report.majorChanges.push(`Method ${signature} input parameters changed from (${par1}) to (${par2})`)
+    report.push(new MethodParametersChange(contract, signature, par1, par2))
   }
 
   // Return parameter changes
   const ret1 = parametersSignature(m1.returnParameters.parameters)
   const ret2 = parametersSignature(m2.returnParameters.parameters)
   if (ret1 !== ret2) {
-    report.majorChanges.push(`Method ${signature} return parameters changed from (${ret1}) to (${ret2})`)
+    report.push(new MethodParametersChange(contract, signature, ret1, ret2))
   }
 
   // State mutability changes
   const state1 = m1.stateMutability
   const state2 = m2.stateMutability
   if (state1 !== state2) {
-    report.majorChanges.push(`Method ${signature} state mutability changed from '${state1}' to '${state2}'`)
+    report.push(new MethodMutabilityChange(contract, signature, state1, state2))
   }
   return report
 }
@@ -121,30 +283,25 @@ const doASTCompatibilityReport = (contractName: string, oldAST: ContractAST, new
   const oldMethods = createMethodIndex(getCheckableMethodsFromAST(oldAST, 'old'))
   const newMethods = createMethodIndex(getCheckableMethodsFromAST(newAST, 'new'))
 
-  const report = {
-    majorChanges: [],
-    minorChanges: []
-  }
-  const fullSignature = (signature) => `${contractName}.${signature}`
+  const report = new ASTCompatibilityReport([])
 
   // Check for modified or missing methods in the new version
   Object.keys(oldMethods).forEach((signature: string) => {
-    const fullSig = fullSignature(signature)
     const method = oldMethods[signature]
     if (!newMethods.hasOwnProperty(signature)) {
       // Method deleted, major change
-      report.majorChanges.push(`Method ${fullSig} was deleted`)
+      report.push(new MethodRemovedChange(contractName, signature))
       // Continue
       return
     }
     const newMethod = newMethods[signature]
-    addAbiReport(report, checkMethodCompatibility(fullSig, method, newMethod))
+    report.include(checkMethodCompatibility(contractName, method, newMethod))
   })
   // Check for added methods in the new version
   Object.keys(newMethods).forEach((signature: string) => {
     if (!oldMethods.hasOwnProperty(signature)) {
       // New method, minor change
-      report.minorChanges.push(`Method ${fullSignature(signature)} was added`)
+      report.push(new MethodAddedChange(contractName, signature))
     }
   })
   return report
@@ -172,14 +329,11 @@ const generateASTCompatibilityReport = (oldContract: ZContract, oldArtifacts: Bu
   const newKind = newAST.getContractNode().contractKind
   if (oldContract === null) {
     if (newKind == CONTRACT_TYPE_CONTRACT) {
-      return major(`Contract ${contractName} is a new Contract`)
+      return new ASTCompatibilityReport([new NewContractChange(contractName)])
     } else {
       // New contract added of a non-contract type (library/interface)
       // therefore no functionality added
-      return {
-        majorChanges: [],
-        minorChanges: []
-      }
+      return new ASTCompatibilityReport([])
     }
   }
 
@@ -192,7 +346,7 @@ const generateASTCompatibilityReport = (oldContract: ZContract, oldArtifacts: Bu
   const kind = oldAST.getContractNode().contractKind
   if (kind !== newKind) {
     // different contract kind (library/interface/contract)
-    return major(`Contract ${contractName} changed type from ${kind} to ${newKind}`)
+    return new ASTCompatibilityReport([new ContractTypeChange(contractName, kind, newKind)])
   }
 
   return doASTCompatibilityReport(contractName, oldAST, newAST)
