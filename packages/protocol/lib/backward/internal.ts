@@ -16,5 +16,6 @@ export const makeZContract = (artifact: any): ZContract => {
   contract.schema = {}
   contract.schema.ast = artifact.ast
   contract.schema.contractName = artifact.contractName
+  contract.schema.deployedBytecode = artifact.deployedBytecode
   return contract
 }

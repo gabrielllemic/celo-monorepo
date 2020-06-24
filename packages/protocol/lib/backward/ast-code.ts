@@ -1,4 +1,4 @@
-import { makeZContract } from '@celo/protocol/lib/backward-utils';
+import { makeZContract } from '@celo/protocol/lib/backward/internal';
 import {
   BuildArtifacts,
   Contract as ZContract
@@ -12,7 +12,7 @@ const STORAGE_DEFAULT = 'default'
 
 const OUT_VOID_PARAMETER_STRING = 'void'
 
-export class ASTCompatibilityReport {
+export class ASTCodeCompatibilityReport {
   changes: Change[];
   constructor(changes: Change[]) {
     this.changes = changes;
@@ -20,7 +20,7 @@ export class ASTCompatibilityReport {
   public push(...changes: Change[]) {
     this.changes.push(...changes)
   }
-  public include(other: ASTCompatibilityReport) {
+  public include(other: ASTCodeCompatibilityReport) {
     this.push(...other.changes)
   }
 }
@@ -41,6 +41,7 @@ export interface ChangeVisitor<T> {
   visitMethodRemoved(change: MethodRemovedChange): T;
   visitContractType(change: ContractTypeChange): T;
   visitNewContract(change: NewContractChange): T;
+  visitDeployedBytecode(change: DeployedBytecodeChange): T;
 }
 
 export abstract class DefaultChangeVisitor<T> implements ChangeVisitor<T> {
@@ -54,6 +55,7 @@ export abstract class DefaultChangeVisitor<T> implements ChangeVisitor<T> {
   visitMethodRemoved = (change: MethodRemovedChange): T => this.visitDefault(change);
   visitContractType = (change: ContractTypeChange): T => this.visitDefault(change);
   visitNewContract = (change: NewContractChange): T => this.visitDefault(change);
+  visitDeployedBytecode = (change: DeployedBytecodeChange): T => this.visitDefault(change);
 }
 
 export class CategorizerChangeVisitor extends DefaultChangeVisitor<ChangeType> {
@@ -70,6 +72,7 @@ export class CategorizerChangeVisitor extends DefaultChangeVisitor<ChangeType> {
     }
     return ChangeType.Major;
   }
+  visitDeployedBytecode = (_change: DeployedBytecodeChange): ChangeType => ChangeType.Patch;
 }
 
 export class EnglishToStringVisitor implements ChangeVisitor<string> {
@@ -92,14 +95,18 @@ export class EnglishToStringVisitor implements ChangeVisitor<string> {
     return `Contract '${change.contract}' deleted a method: '${change.signature}'`;
   }
   visitContractType(change: ContractTypeChange): string {
-    return `Contract '${change.contract}' changed its type from '${change.oldType}' to '${change.newType}'`;
+    return `Contract '${change.contract}' changed its type from '${change.oldValue}' to '${change.newValue}'`;
   }
   visitNewContract(change: NewContractChange): string {
     return `Contract '${change.contract}' was created`;
   }
+  visitDeployedBytecode(change: DeployedBytecodeChange): string {
+    return `Contract '${change.contract}' has a modified 'deployedBytecode' binary property`;
+  }
 }
 
 abstract class ContractChange implements Change {
+  type: string;
   contract: string;
   constructor(contract: string) {
     this.contract = contract;
@@ -112,19 +119,31 @@ abstract class ContractChange implements Change {
 }
 
 export class NewContractChange extends ContractChange {
+  type = "NewContract";
   accept<T>(visitor: ChangeVisitor<T>): T {
     return visitor.visitNewContract(this);
   }
 }
 
-export class ContractTypeChange extends ContractChange {
-  oldType: string;
-  newType: string;
-  constructor(contract: string, oldType: string, newType: string) {
+abstract class ContractValueChange extends ContractChange {
+  oldValue: string;
+  newValue: string;
+  constructor(contract: string, oldValue: string, newValue: string) {
     super(contract);
-    this.oldType = oldType;
-    this.newType = newType;
+    this.oldValue = oldValue;
+    this.newValue = newValue;
   }
+}
+
+export class DeployedBytecodeChange extends ContractChange {
+  type = "DeployedBytecode";
+  accept<T>(visitor: ChangeVisitor<T>): T {
+    return visitor.visitDeployedBytecode(this);
+  }
+}
+
+export class ContractTypeChange extends ContractValueChange {
+  type = "ContractType";
   accept<T>(visitor: ChangeVisitor<T>): T {
     return visitor.visitContractType(this);
   }
@@ -142,12 +161,14 @@ abstract class MethodChange extends ContractChange {
 }
 
 export class MethodAddedChange extends MethodChange {
+  type = "MethodAdded";
   accept<T>(visitor: ChangeVisitor<T>): T {
     return visitor.visitMethodAdded(this);
   }
 }
 
 export class MethodRemovedChange extends MethodChange {
+  type = "MethodRemoved";
   accept<T>(visitor: ChangeVisitor<T>): T {
     return visitor.visitMethodRemoved(this);
   }
@@ -164,24 +185,28 @@ abstract class MethodValueChange extends MethodChange {
 }
 
 export class MethodVisibilityChange extends MethodValueChange {
+  type = "MethodVisibility";
   accept<T>(visitor: ChangeVisitor<T>): T {
     return visitor.visitMethodVisibility(this);
   }
 }
 
 export class MethodMutabilityChange extends MethodValueChange {
+  type = "MethodMutability";
   accept<T>(visitor: ChangeVisitor<T>): T {
     return visitor.visitMethodMutability(this);
   }
 }
 
 export class MethodParametersChange extends MethodValueChange {
+  type = "MethodParameters";
   accept<T>(visitor: ChangeVisitor<T>): T {
     return visitor.visitMethodParameters(this);
   }
 }
 
 export class MethodReturnChange extends MethodValueChange {
+  type = "MethodReturn";
   accept<T>(visitor: ChangeVisitor<T>): T {
     return visitor.visitMethodReturn(this);
   }
@@ -212,9 +237,9 @@ const createMethodIndex = (methods: any[]): any[] => {
   return Object.assign({}, ...asPairs)
 }
 
-const mergeReports = (reports: ASTCompatibilityReport[]): ASTCompatibilityReport => {
-  const report = new ASTCompatibilityReport([])
-  reports.forEach((r: ASTCompatibilityReport): void => {
+const mergeReports = (reports: ASTCodeCompatibilityReport[]): ASTCodeCompatibilityReport => {
+  const report = new ASTCodeCompatibilityReport([])
+  reports.forEach((r: ASTCodeCompatibilityReport): void => {
     report.include(r)
   })
   return report
@@ -231,8 +256,8 @@ const parametersSignature = (parameters: any[]): string => {
   return parameters.map(singleSignature).join(', ')
 }
 
-const checkMethodCompatibility = (contract: string, m1: any, m2: any): ASTCompatibilityReport => {
-  const report = new ASTCompatibilityReport([])
+const checkMethodCompatibility = (contract: string, m1: any, m2: any): ASTCodeCompatibilityReport => {
+  const report = new ASTCodeCompatibilityReport([])
   const signature = getSignature(m1)
   // Sanity check
   const signature2 = getSignature(m2)
@@ -279,11 +304,11 @@ const getCheckableMethodsFromAST = (contract: ContractAST, id: string): any[] =>
   }
 }
 
-const doASTCompatibilityReport = (contractName: string, oldAST: ContractAST, newAST: ContractAST): ASTCompatibilityReport => {
+const doASTCompatibilityReport = (contractName: string, oldAST: ContractAST, newAST: ContractAST): ASTCodeCompatibilityReport => {
   const oldMethods = createMethodIndex(getCheckableMethodsFromAST(oldAST, 'old'))
   const newMethods = createMethodIndex(getCheckableMethodsFromAST(newAST, 'new'))
 
-  const report = new ASTCompatibilityReport([])
+  const report = new ASTCodeCompatibilityReport([])
 
   // Check for modified or missing methods in the new version
   Object.keys(oldMethods).forEach((signature: string) => {
@@ -308,7 +333,7 @@ const doASTCompatibilityReport = (contractName: string, oldAST: ContractAST, new
 }
 
 const generateASTCompatibilityReport = (oldContract: ZContract, oldArtifacts: BuildArtifacts,
-  newContract: ZContract, newArtifacts: BuildArtifacts): ASTCompatibilityReport => {
+  newContract: ZContract, newArtifacts: BuildArtifacts): ASTCodeCompatibilityReport => {
   // Sanity checks
   if (newContract === null) {
     throw new Error('newContract cannot be null')
@@ -319,7 +344,6 @@ const generateASTCompatibilityReport = (oldContract: ZContract, oldArtifacts: Bu
   if (newArtifacts === null) {
     throw new Error('newArtifacts cannot be null')
   }
-
   const contractName = newContract.schema.contractName
 
   // Need to manually use ContractAST since its internal use in ZContract
@@ -329,11 +353,11 @@ const generateASTCompatibilityReport = (oldContract: ZContract, oldArtifacts: Bu
   const newKind = newAST.getContractNode().contractKind
   if (oldContract === null) {
     if (newKind == CONTRACT_TYPE_CONTRACT) {
-      return new ASTCompatibilityReport([new NewContractChange(contractName)])
+      return new ASTCodeCompatibilityReport([new NewContractChange(contractName)])
     } else {
       // New contract added of a non-contract type (library/interface)
       // therefore no functionality added
-      return new ASTCompatibilityReport([])
+      return new ASTCodeCompatibilityReport([])
     }
   }
 
@@ -346,13 +370,18 @@ const generateASTCompatibilityReport = (oldContract: ZContract, oldArtifacts: Bu
   const kind = oldAST.getContractNode().contractKind
   if (kind !== newKind) {
     // different contract kind (library/interface/contract)
-    return new ASTCompatibilityReport([new ContractTypeChange(contractName, kind, newKind)])
+    return new ASTCodeCompatibilityReport([new ContractTypeChange(contractName, kind, newKind)])
   }
 
-  return doASTCompatibilityReport(contractName, oldAST, newAST)
+  const report = doASTCompatibilityReport(contractName, oldAST, newAST)
+  // Check deployed byte code change
+  if (oldContract.schema.deployedBytecode !== newContract.schema.deployedBytecode) {
+    report.push(new DeployedBytecodeChange(contractName))
+  }
+  return report
 }
 
-export const reportASTIncompatibilities = (oldArtifacts: BuildArtifacts, newArtifacts: BuildArtifacts): ASTCompatibilityReport => {
+export const reportASTIncompatibilities = (oldArtifacts: BuildArtifacts, newArtifacts: BuildArtifacts): ASTCodeCompatibilityReport => {
   const reports = newArtifacts.listArtifacts().map((newArtifact) => {
     const oldArtifact = oldArtifacts.getArtifactByName(newArtifact.contractName)
     const oldZContract = oldArtifact ? makeZContract(oldArtifact) : null
